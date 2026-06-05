@@ -1,0 +1,2 @@
+0 3 * * * /usr/bin/python3 /home/you/tradewinds/scripts/ingest_underlyings.py /home/you/tradewinds/config/universe.csv >> /var/log/tradewinds.log 2>&1
+

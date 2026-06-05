@@ -1,0 +1,2 @@
+ticker,quarterly_dividend,years_of_payment,years_of_growth
+T,0.28,5,0

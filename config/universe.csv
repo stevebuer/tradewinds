@@ -1,0 +1,5 @@
+symbol,name,sector,industry,is_wheel_candidate
+KO,Coca-Cola Co,Consumer Staples,Beverages—Non-Alcoholic,true
+PG,Procter & Gamble,Consumer Staples,Household Products,true
+JNJ,Johnson & Johnson,Healthcare,Drug Manufacturers—General,true
+PEP,PepsiCo,Consumer Staples,Beverages—Non-Alcoholic,true
