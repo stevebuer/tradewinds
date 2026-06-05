@@ -3,9 +3,17 @@
 import argparse
 import csv
 import getpass
+import sys
+from pathlib import Path
+
 import psycopg2
 from psycopg2.extras import execute_batch
 from typing import List, Dict, Any
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from data.config import get_db_config
 
 
 class DividendsLoader:
@@ -24,13 +32,17 @@ class DividendsLoader:
         "dividend_compounders",
     }
 
-    def __init__(self, dbname: str, user: str, password: str, host: str = "localhost"):
-        self.conn = psycopg2.connect(
-            dbname=dbname,
-            user=user,
-            password=password,
-            host=host,
-        )
+    def __init__(self, dbname: str, user: str, password: str, host: str = "localhost", port: int | None = None):
+        conn_params = {
+            "dbname": dbname,
+            "user": user,
+            "password": password,
+            "host": host,
+        }
+        if port is not None:
+            conn_params["port"] = port
+
+        self.conn = psycopg2.connect(**conn_params)
         self.conn.autocommit = True
 
     def insert_dividends(self, rows: List[Dict[str, Any]], table: str) -> None:
@@ -85,16 +97,20 @@ class DividendsLoader:
 
 
 def parse_args() -> argparse.Namespace:
+    db_config = get_db_config()
+
     parser = argparse.ArgumentParser(
         description="Load dividend CSV files into PostgreSQL dividend tables."
     )
     parser.add_argument("table", choices=DividendsLoader.VALID_TABLES,
                         help="Destination dividend table")
     parser.add_argument("csv_file", help="Path to the input CSV file")
-    parser.add_argument("--dbname", default="tradewinds", help="Postgres database name")
-    parser.add_argument("--user", default=getpass.getuser(), help="Postgres user")
-    parser.add_argument("--password", required=True, help="Postgres password")
-    parser.add_argument("--host", default="localhost", help="Postgres host")
+    parser.add_argument("--dbname", default=db_config["dbname"], help="Postgres database name")
+    parser.add_argument("--user", default=db_config["user"], help="Postgres user")
+    parser.add_argument("--password", default=db_config["password"], required=not bool(db_config["password"]),
+                        help="Postgres password")
+    parser.add_argument("--host", default=db_config["host"], help="Postgres host")
+    parser.add_argument("--port", default=db_config["port"], help="Postgres port")
     return parser.parse_args()
 
 
@@ -122,6 +138,7 @@ def main() -> None:
         user=args.user,
         password=args.password,
         host=args.host,
+        port=int(args.port) if args.port else None,
     )
 
     try:

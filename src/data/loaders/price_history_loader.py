@@ -4,13 +4,17 @@ from datetime import datetime
 
 
 class PriceHistoryLoader:
-    def __init__(self, dbname, user, password, host="localhost"):
-        self.conn = psycopg2.connect(
-            dbname=dbname,
-            user=user,
-            password=password,
-            host=host
-        )
+    def __init__(self, dbname, user, password, host="localhost", port=None):
+        connect_args = {
+            "dbname": dbname,
+            "user": user,
+            "password": password,
+            "host": host,
+        }
+        if port is not None:
+            connect_args["port"] = port
+
+        self.conn = psycopg2.connect(**connect_args)
         self.conn.autocommit = True
 
     def close(self):

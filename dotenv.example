@@ -1,0 +1,10 @@
+# Database connection settings
+DB_NAME=tradewinds
+DB_USER=tradewinds_user
+DB_PASSWORD=YOUR_DB_PASSWORD
+DB_HOST=localhost
+DB_PORT=5432
+
+# Schwab API credentials
+SCHWAB_CLIENT_ID=
+SCHWAB_REFRESH_TOKEN=
