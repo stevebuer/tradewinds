@@ -36,6 +36,12 @@ class PriceHistoryLoader:
         ]
         """
 
+        if not rows:
+            return
+
+        symbols = {row["symbol"] for row in rows}
+        self._ensure_underlyings(symbols)
+
         sql = """
             INSERT INTO price_history (
                 symbol,
@@ -64,6 +70,20 @@ class PriceHistoryLoader:
                 volume = EXCLUDED.volume;
         """
 
+        with self.conn.cursor() as cur:
+            execute_batch(cur, sql, rows, page_size=200)
+
+    def _ensure_underlyings(self, symbols):
+        if not symbols:
+            return
+
+        sql = """
+            INSERT INTO underlyings (symbol)
+            VALUES (%(symbol)s)
+            ON CONFLICT (symbol) DO NOTHING;
+        """
+
+        rows = [{"symbol": symbol} for symbol in symbols]
         with self.conn.cursor() as cur:
             execute_batch(cur, sql, rows, page_size=200)
 
