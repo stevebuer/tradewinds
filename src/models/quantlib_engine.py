@@ -17,7 +17,7 @@ class MarketParams:
 
 class QuantLibEngine:
     def __init__(self, calendar: ql.Calendar | None = None, day_counter: ql.DayCounter | None = None):
-        self.calendar = calendar or ql.UnitedStates()
+        self.calendar = calendar or ql.UnitedStates(ql.UnitedStates.NYSE)
         self.day_counter = day_counter or ql.Actual365Fixed()
 
     def _build_process(self, params: MarketParams) -> ql.BlackScholesMertonProcess:

@@ -38,6 +38,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Force ingestion of all available expirations for the symbol.",
     )
+    parser.add_argument(
+        "--calculate-greeks",
+        action="store_true",
+        help="Calculate option greeks with QuantLib and overwrite Yahoo-provided greeks.",
+    )
+    parser.add_argument(
+        "--risk-free-rate",
+        type=float,
+        default=0.0,
+        help="Risk-free interest rate used for greeks calculation (annualized decimal).",
+    )
+    parser.add_argument(
+        "--dividend-yield",
+        type=float,
+        default=None,
+        help="Dividend yield used for greeks calculation (annualized decimal). Defaults to the underlying quote dividend yield if available.",
+    )
     parser.add_argument("--dbname", default=db_config["dbname"], help="Postgres database name")
     parser.add_argument("--user", default=db_config["user"], help="Postgres user")
     parser.add_argument(
@@ -112,12 +129,76 @@ def normalize_option_chain(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "gamma": contract.get("gamma"),
                 "theta": contract.get("theta"),
                 "vega": contract.get("vega"),
-                "implied_vol": contract.get("impliedVol"),
+                "implied_vol": contract.get("impliedVol") or contract.get("impliedVolatility"),
                 "open_interest": contract.get("openInterest"),
                 "volume": contract.get("volume"),
             })
 
     return rows
+
+
+def _import_quantlib_engine():
+    try:
+        from models.quantlib_engine import MarketParams, QuantLibEngine
+    except ImportError as exc:
+        raise RuntimeError(
+            "QuantLib support is required for --calculate-greeks. "
+            "Install QuantLib or the appropriate Python bindings in your virtualenv."
+        ) from exc
+
+    return MarketParams, QuantLibEngine
+
+
+def calculate_greeks(
+    rows: List[Dict[str, Any]],
+    quote: Dict[str, Any],
+    risk_free_rate: float,
+    dividend_yield: Optional[float],
+) -> None:
+    if not rows:
+        return
+
+    MarketParams, QuantLibEngine = _import_quantlib_engine()
+    engine = QuantLibEngine()
+
+    spot = (
+        quote.get("regularMarketPrice")
+        or quote.get("lastPrice")
+        or quote.get("previousClose")
+    )
+    if spot is None:
+        raise RuntimeError("Unable to calculate greeks: missing underlying spot price.")
+
+    valuation_ts = quote.get("regularMarketTime") or quote.get("postMarketTime") or quote.get("preMarketTime")
+    valuation_date = (
+        datetime.fromtimestamp(valuation_ts, tz=timezone.utc).date()
+        if valuation_ts is not None
+        else datetime.now(tz=timezone.utc).date()
+    )
+
+    dividend = dividend_yield if dividend_yield is not None else quote.get("dividendYield") or 0.0
+
+    for row in rows:
+        implied_vol = row.get("implied_vol")
+        if implied_vol is None:
+            continue
+
+        params = MarketParams(
+            spot=float(spot),
+            strike=float(row["strike"]),
+            risk_free_rate=float(risk_free_rate),
+            dividend_yield=float(dividend),
+            volatility=float(implied_vol),
+            maturity=row["expiration"],
+            valuation_date=valuation_date,
+            is_call=row["option_type"] == "call",
+        )
+
+        greeks = engine.greeks(params)
+        row["delta"] = greeks["delta"]
+        row["gamma"] = greeks["gamma"]
+        row["theta"] = greeks["theta"]
+        row["vega"] = greeks["vega"]
 
 
 def fetch_expiration_timestamps(client: YahooClient, symbol: str, expiration: Optional[str]) -> List[Optional[int]]:
@@ -154,6 +235,12 @@ def main() -> None:
         print(f"Fetching option chain for {symbol} expiration={expiration_ts}")
         raw_chain = client.get_option_chain(symbol, date=expiration_ts)
         rows = normalize_option_chain(raw_chain)
+
+        if args.calculate_greeks:
+            result = raw_chain.get("optionChain", {}).get("result")
+            quote = result[0].get("quote", {}) if result else {}
+            calculate_greeks(rows, quote, args.risk_free_rate, args.dividend_yield)
+
         all_rows.extend(rows)
 
     if not all_rows:
