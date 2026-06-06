@@ -8,13 +8,17 @@ class ChainLoader:
     Loads normalized option chain rows into PostgreSQL.
     """
 
-    def __init__(self, dbname: str, user: str, password: str, host: str = "localhost"):
-        self.conn = psycopg2.connect(
-            dbname=dbname,
-            user=user,
-            password=password,
-            host=host
-        )
+    def __init__(self, dbname: str, user: str, password: str, host: str = "localhost", port: int = None):
+        connect_args = {
+            "dbname": dbname,
+            "user": user,
+            "password": password,
+            "host": host,
+        }
+        if port is not None:
+            connect_args["port"] = port
+
+        self.conn = psycopg2.connect(**connect_args)
         self.conn.autocommit = True
 
     # ---------------------------------------------------------

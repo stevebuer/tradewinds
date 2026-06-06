@@ -1,6 +1,7 @@
+import re
 import time
 import requests
-from requests.exceptions import RequestException
+from requests.exceptions import HTTPError, RequestException
 from typing import Dict, Any, List, Optional
 
 
@@ -22,6 +23,7 @@ class YahooFinanceApi:
         })
         self.max_retries = 5
         self.backoff_factor = 1
+        self._crumb_cache: Dict[str, str] = {}
 
     def _get_json(self, url: str, params: Optional[dict] = None) -> Dict[str, Any]:
         retry_statuses = {429, 500, 502, 503, 504}
@@ -48,6 +50,45 @@ class YahooFinanceApi:
 
         raise RuntimeError(f"Failed to GET {url} after {self.max_retries} retries")
 
+    def _get_html(self, url: str, params: Optional[dict] = None) -> str:
+        html_headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+
+        for attempt in range(self.max_retries):
+            try:
+                response = self.session.get(url, params=params, headers=html_headers, timeout=10)
+            except RequestException:
+                if attempt == self.max_retries - 1:
+                    raise
+                wait = self.backoff_factor * 2**attempt
+                time.sleep(wait)
+                continue
+
+            if response.status_code in {429, 500, 502, 503, 504}:
+                if attempt == self.max_retries - 1:
+                    response.raise_for_status()
+                wait = self.backoff_factor * 2**attempt
+                time.sleep(wait)
+                continue
+
+            response.raise_for_status()
+            return response.text
+
+        raise RuntimeError(f"Failed to GET HTML {url} after {self.max_retries} retries")
+
+    def _extract_crumb(self, html: str) -> Optional[str]:
+        match = re.search(r'"crumb"\s*:\s*"([^"]+)"', html)
+        if not match:
+            return None
+
+        raw_crumb = match.group(1)
+        return raw_crumb.encode("utf-8").decode("unicode_escape")
+
+    def _get_crumb(self, symbol: str) -> Optional[str]:
+        html = self._get_html(f"https://finance.yahoo.com/quote/{symbol}")
+        return self._extract_crumb(html)
+
     def get_quote(self, symbol: str) -> Dict[str, Any]:
         """
         Fetch current quote data for a symbol.
@@ -65,12 +106,26 @@ class YahooFinanceApi:
         If `date` is provided, it should be a Unix timestamp for the expiration
         date to load.
         """
-        url = f"https://query2.finance.yahoo.com/v7/finance/options/{symbol}"
+        url = f"https://query1.finance.yahoo.com/v7/finance/options/{symbol}"
         params = {}
         if date is not None:
             params["date"] = date
 
-        return self._get_json(url, params=params)
+        crumb = self._crumb_cache.get(symbol)
+        if crumb:
+            params["crumb"] = crumb
+
+        try:
+            return self._get_json(url, params=params)
+        except HTTPError as exc:
+            response = getattr(exc, "response", None)
+            if response is not None and response.status_code == 401:
+                crumb = self._get_crumb(symbol)
+                if crumb:
+                    self._crumb_cache[symbol] = crumb
+                    params["crumb"] = crumb
+                    return self._get_json(url, params=params)
+            raise
 
     def get_option_expirations(self, symbol: str) -> List[int]:
         """
