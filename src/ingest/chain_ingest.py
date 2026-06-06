@@ -5,6 +5,7 @@ import getpass
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+import psycopg2
 from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +55,17 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Dividend yield used for greeks calculation (annualized decimal). Defaults to the underlying quote dividend yield if available.",
+    )
+    parser.add_argument(
+        "--require-db-spot",
+        action="store_true",
+        help="Require a recent spot price from the local price_quotes table; fail if none found.",
+    )
+    parser.add_argument(
+        "--freshness-minutes",
+        type=int,
+        default=5,
+        help="Maximum age in minutes for a DB price snapshot to be considered fresh (default: 5). If the latest snapshot is older it will be treated as missing.",
     )
     parser.add_argument("--dbname", default=db_config["dbname"], help="Postgres database name")
     parser.add_argument("--user", default=db_config["user"], help="Postgres user")
@@ -154,20 +166,73 @@ def calculate_greeks(
     quote: Dict[str, Any],
     risk_free_rate: float,
     dividend_yield: Optional[float],
+    require_db_spot: bool = False,
+    freshness_minutes: Optional[int] = None,
 ) -> None:
     if not rows:
         return
-
     MarketParams, QuantLibEngine = _import_quantlib_engine()
     engine = QuantLibEngine()
 
+    # Prefer the latest price snapshot from the local `price_quotes` table.
+    underlying = rows[0].get("underlying") if rows else None
+
+    db_config = get_db_config()
+    db_spot: Optional[float] = None
+    try:
+        conn_args = {
+            "dbname": db_config["dbname"],
+            "user": db_config["user"],
+            "password": db_config["password"],
+            "host": db_config["host"],
+        }
+        if db_config.get("port"):
+            conn_args["port"] = int(db_config["port"])
+
+        with psycopg2.connect(**conn_args) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT price, timestamp FROM price_quotes WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1",
+                    (underlying,)
+                )
+                r = cur.fetchone()
+                if r and r[0] is not None:
+                    db_price = r[0]
+                    db_ts = r[1]
+                    if db_ts is not None:
+                        # Ensure timestamp is timezone-aware in UTC for comparison
+                        if getattr(db_ts, "tzinfo", None) is None:
+                            db_ts = db_ts.replace(tzinfo=timezone.utc)
+                        age_minutes = (datetime.now(tz=timezone.utc) - db_ts).total_seconds() / 60.0
+                        if freshness_minutes is None or age_minutes <= freshness_minutes:
+                            db_spot = float(db_price)
+                        else:
+                            # snapshot is stale; treat as missing
+                            db_spot = None
+                    else:
+                        db_spot = float(db_price)
+    except Exception:
+        # If DB lookup fails, fall back to the provided quote unless DB spot is required
+        db_spot = None
+
+    if require_db_spot and db_spot is None:
+        raise RuntimeError(
+            "--require-db-spot set but no recent price snapshot found in price_quotes for "
+            f"{underlying} (freshness_minutes={freshness_minutes})"
+        )
+
+    # Fallback to quote-provided spot if DB value not available
     spot = (
-        quote.get("regularMarketPrice")
-        or quote.get("lastPrice")
-        or quote.get("previousClose")
+        db_spot
+        if db_spot is not None
+        else (
+            quote.get("regularMarketPrice")
+            or quote.get("lastPrice")
+            or quote.get("previousClose")
+        )
     )
     if spot is None:
-        raise RuntimeError("Unable to calculate greeks: missing underlying spot price.")
+        raise RuntimeError("Unable to calculate greeks: missing underlying spot price (DB and quote both empty).")
 
     valuation_ts = quote.get("regularMarketTime") or quote.get("postMarketTime") or quote.get("preMarketTime")
     valuation_date = (
@@ -239,7 +304,19 @@ def main() -> None:
         if args.calculate_greeks:
             result = raw_chain.get("optionChain", {}).get("result")
             quote = result[0].get("quote", {}) if result else {}
-            calculate_greeks(rows, quote, args.risk_free_rate, args.dividend_yield)
+            try:
+                calculate_greeks(
+                    rows,
+                    quote,
+                    args.risk_free_rate,
+                    args.dividend_yield,
+                    args.require_db_spot,
+                    args.freshness_minutes,
+                )
+            except Exception as e:
+                print(f"ERROR calculating greeks: {e}")
+                loader.close()
+                return
 
         all_rows.extend(rows)
 
