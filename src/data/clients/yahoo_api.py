@@ -96,8 +96,23 @@ class YahooFinanceApi:
         url = f"{self.BASE_URL}/v7/finance/quote"
         params = {"symbols": symbol}
 
-        data = self._get_json(url, params=params)
-        return data.get("quoteResponse", {})
+        crumb = self._crumb_cache.get(symbol)
+        if crumb:
+            params["crumb"] = crumb
+
+        try:
+            data = self._get_json(url, params=params)
+            return data.get("quoteResponse", {})
+        except HTTPError as exc:
+            response = getattr(exc, "response", None)
+            if response is not None and response.status_code == 401:
+                crumb = self._get_crumb(symbol)
+                if crumb:
+                    self._crumb_cache[symbol] = crumb
+                    params["crumb"] = crumb
+                    data = self._get_json(url, params=params)
+                    return data.get("quoteResponse", {})
+            raise
 
     def get_option_chain(self, symbol: str, date: Optional[int] = None) -> Dict[str, Any]:
         """
